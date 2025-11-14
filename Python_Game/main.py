@@ -1,5 +1,3 @@
-# python
-# main.py
 import os
 import logging
 import random
@@ -137,3 +135,4 @@ def ejecutar():
 
 if __name__ == "__main__":
     ejecutar()
+
