@@ -1,5 +1,3 @@
-# python
-# utils.py
 import math
 import logging
 import numpy as np
@@ -48,3 +46,4 @@ def apply_bloom(scene_surf, intensity=BLOOM_INTENSITY, downscale=BLOOM_DOWNSCALE
     except Exception:
         logger.exception("Error aplicando bloom")
         return scene_surf.copy()
+
