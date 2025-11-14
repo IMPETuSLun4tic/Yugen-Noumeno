@@ -1,5 +1,3 @@
-# python
-# render.py
 import pygame
 from pygame.math import Vector2
 
@@ -64,5 +62,6 @@ def dibujar_escena(scene, entidades, recursos, haz_activo, nave, mouse_pos, stat
         pygame.draw.line(surf, (*COLOR_BEAM, 100), (origen.x, origen.y), (destino.x, destino.y), 12)
         pygame.draw.line(surf, (*COLOR_BEAM, 220), (origen.x, origen.y), (destino.x, destino.y), 4)
         scene.blit(surf, (0,0))
+
 
     dibujar_ui(scene, entidades, stats, nave, reloj, fuente=fuente_ui)
