@@ -1,5 +1,3 @@
-# python
-# entities.py
 import math
 import random
 import time
@@ -363,3 +361,4 @@ class Enemigo:
         pygame.draw.circle(surf, (*COLOR_ENEMIGO, 90), (int(cx), int(cy)), int(self.radio+6))
         pygame.draw.circle(surf, COLOR_ENEMIGO, (int(cx), int(cy)), int(self.radio))
         pantalla.blit(surf, (self.pos.x - cx + offset[0], self.pos.y - cy + offset[1]))
+
