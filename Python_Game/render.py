@@ -54,14 +54,48 @@ def dibujar_escena(scene, entidades, recursos, haz_activo, nave, mouse_pos, stat
 
     if haz_activo:
         origen = nave.pos
-        dir_norm = (Vector2(mouse_pos) - origen)
-        dir_norm = dir_norm.normalize() if dir_norm.length_squared() != 0 else Vector2(1,0)
-        destino = origen + dir_norm * ALCANCE_BEAM
-        surf = pygame.Surface((ANCHO, ALTO), pygame.SRCALPHA)
-        pygame.draw.line(surf, (*COLOR_BEAM, 40), (origen.x, origen.y), (destino.x, destino.y), 40)
-        pygame.draw.line(surf, (*COLOR_BEAM, 100), (origen.x, origen.y), (destino.x, destino.y), 12)
-        pygame.draw.line(surf, (*COLOR_BEAM, 220), (origen.x, origen.y), (destino.x, destino.y), 4)
-        scene.blit(surf, (0,0))
+        dir_beam = Vector2(mouse_pos) - origen
+        dist = dir_beam.length()
+        if dist > 0:
+            dir_norm = dir_beam.normalize()
+
+            # Aplicar desfase de 6 unidades desde la nave
+            origen_desfasado = origen + dir_norm * 26
+            end_pos = origen_desfasado + dir_norm * min(ALCANCE_BEAM, dist - 26)
+
+            # Capa 1: Brillo exterior difuso
+            for i in range(5, 0, -1):
+                alpha = int(20 * i)
+                width = 6 + (i * 4)
+                pygame.draw.line(
+                    scene,
+                    (*COLOR_BEAM, alpha),
+                    (int(origen_desfasado.x), int(origen_desfasado.y)),
+                    (int(end_pos.x), int(end_pos.y)),
+                    width
+                )
+
+            # Capa 2: Brillo medio
+            for i in range(3, 0, -1):
+                alpha = int(60 * i)
+                width = 4 + (i * 2)
+                pygame.draw.line(
+                    scene,
+                    (*COLOR_BEAM, alpha),
+                    (int(origen_desfasado.x), int(origen_desfasado.y)),
+                    (int(end_pos.x), int(end_pos.y)),
+                    width
+                )
+
+            # Capa 3: Núcleo brillante blanco
+            pygame.draw.line(
+                scene,
+                (255, 255, 255, 200),
+                (int(origen_desfasado.x), int(origen_desfasado.y)),
+                (int(end_pos.x), int(end_pos.y)),
+                6
+            )
+
 
 
     dibujar_ui(scene, entidades, stats, nave, reloj, fuente=fuente_ui)

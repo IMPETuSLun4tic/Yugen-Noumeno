@@ -42,6 +42,7 @@ def cargar_recursos():
 
     try:
         recursos['s_shot'] = pygame.mixer.Sound('laser.wav')
+        recursos['s_shot'].set_volume(0.5)
         recursos['s_missile'] = pygame.mixer.Sound('missile.wav')
         recursos['s_explosion'] = pygame.mixer.Sound('explosion.wav')
         recursos['s_beam'] = pygame.mixer.Sound('beam.wav')

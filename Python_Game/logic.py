@@ -89,11 +89,6 @@ def procesar_inputs(nave, dt, mouse_pos, entidades, recursos, stats):
 def actualizar_proyectiles(entidades, dt):
     for l in entidades['lasers']:
         l.actualizar(dt)
-        entidades['particles'].append(
-            Particle(l.pos + Vector2(random.uniform(-2,2), random.uniform(-2,2)),
-                     Vector2(random.uniform(-40,40), random.uniform(-40,40)),
-                     (255,200,200), 1.6, 0.12)
-        )
     entidades['lasers'] = [l for l in entidades['lasers'] if l.vivo]
 
     for m in entidades['misiles']:

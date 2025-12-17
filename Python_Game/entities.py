@@ -16,8 +16,6 @@ from config import (
     CADENCIA_MISIL,
 )
 from utils import clamp
-from config import STAR_COUNT
-from config import NEBULA_COUNT_MIN, NEBULA_COUNT_MAX, FOG_COUNT_MIN, FOG_COUNT_MAX
 
 logger = logging.getLogger("Naves")
 
@@ -269,19 +267,80 @@ class LaserShot:
         if not (0 <= self.pos.x <= ANCHO and 0 <= self.pos.y <= ALTO):
             self.vivo = False
 
-    def dibujar(self, pantalla, offset=(0,0)):
-        surf = pygame.Surface((20,20), pygame.SRCALPHA)
-        cx, cy = 10, 10
-        pygame.draw.circle(surf, (*COLOR_LASER, 50), (cx,cy), 9)
-        pygame.draw.circle(surf, (*COLOR_LASER, 140), (cx,cy), 5)
-        pygame.draw.circle(surf, COLOR_LASER, (cx,cy), 2)
-        pantalla.blit(surf, (self.pos.x - 10 + offset[0], self.pos.y - 10 + offset[1]))
+    def dibujar(self, pantalla, offset=(0, 0)):
+        # Parámetros del láser mejorado
+        largo = 30
+        ancho_core = 4
+        ancho_glow = 6
+        separacion = 16
+
+        # Superficie más grande para acomodar el brillo
+        surf = pygame.Surface((largo + 30, largo + 30), pygame.SRCALPHA)
+        centro = (largo + 30) // 2
+
+        # Calcular ángulo de rotación
+        angulo = math.degrees(math.atan2(-self.vel.y, self.vel.x)) - 90
+
+        # Función auxiliar para dibujar un láser individual
+        def dibujar_laser(x_centro):
+            # Capa 1: Brillo exterior más difuso
+            for i in range(4, 0, -1):
+                alpha = int(15 * i)
+                ancho_actual = ancho_glow + (i * 2)
+                rect = pygame.Rect(
+                    x_centro - ancho_actual // 2,
+                    centro - largo // 2 - 4,
+                    ancho_actual,
+                    largo + 8
+                )
+                pygame.draw.rect(surf, (*COLOR_LASER, alpha), rect)
+
+            # Capa 2: Brillo medio
+            for i in range(3, 0, -1):
+                alpha = int(40 * i)
+                ancho_actual = ancho_glow - (i * 1)
+                rect = pygame.Rect(
+                    x_centro - ancho_actual // 2,
+                    centro - largo // 2 - 2,
+                    ancho_actual,
+                    largo + 4
+                )
+                pygame.draw.rect(surf, (*COLOR_LASER, alpha), rect)
+
+            # Capa 3: Núcleo brillante con gradiente
+            pygame.draw.rect(
+                surf,
+                (255, 255, 255, 220),
+                (x_centro - ancho_core // 2, centro - largo // 2, ancho_core, largo)
+            )
+
+            # Capa 4: Centro ultra brillante
+            pygame.draw.rect(
+                surf,
+                (255, 255, 255, 255),
+                (x_centro - ancho_core // 2 + 1, centro - largo // 2 + 2, ancho_core - 2, largo - 4)
+            )
+
+
+
+        # Dibujar ambos láseres
+        x1 = centro - separacion // 2
+        x2 = centro + separacion // 2
+
+        dibujar_laser(x1)
+        dibujar_laser(x2)
+
+        # Rotar y dibujar
+        surf_rotada = pygame.transform.rotate(surf, angulo)
+        rect = surf_rotada.get_rect(center=(self.pos.x + offset[0], self.pos.y + offset[1]))
+        pantalla.blit(surf_rotada, rect)
+
 
 class Misil:
     def __init__(self, pos, dir_vec):
         self.pos = Vector2(pos)
         if dir_vec.length_squared() == 0:
-            dir_vec = Vector2(1,0)
+            dir_vec = Vector2(1, 0)
         self.vel = dir_vec.normalize() * VELOCIDAD_MISIL
         self.radio = 8
         self.danio = DANIO_MISIL
@@ -291,23 +350,71 @@ class Misil:
     def actualizar(self, dt, particles):
         self.pos += self.vel * dt
         self.tail_timer += dt
-        if self.tail_timer > 0.03:
+
+        if self.tail_timer > 0.015:
             self.tail_timer = 0.0
             back = self.pos - self.vel.normalize() * 8
-            for _ in range(2):
-                vel = Vector2(random.uniform(-30,-10), random.uniform(-10,10)) + -self.vel.normalize()*20
-                particles.append(Particle(back + Vector2(random.uniform(-4,4), random.uniform(-4,4)), vel, (255,140,40), random.uniform(2,4), 0.5))
+
+            for _ in range(6):
+                vel = Vector2(random.uniform(-40, -5), random.uniform(-15, 15)) + -self.vel.normalize() * 30
+                particles.append(Particle(
+                    back + Vector2(random.uniform(-6, 6), random.uniform(-6, 6)),
+                    vel,
+                    random.choice([(255, 140, 40), (255, 180, 60), (255, 100, 20)]),
+                    random.uniform(1.5, 3), # Ancho
+                    random.uniform(0.5, 0.8)
+                ))
         if not (0 <= self.pos.x <= ANCHO and 0 <= self.pos.y <= ALTO):
             self.vivo = False
 
-    def dibujar(self, pantalla, offset=(0,0)):
-        pygame.draw.circle(pantalla, COLOR_MISIL, (int(self.pos.x + offset[0]), int(self.pos.y + offset[1])), self.radio)
-        surf = pygame.Surface((30,10), pygame.SRCALPHA)
-        pygame.draw.ellipse(surf, (255,150,50,160), (0,0,30,10))
-        ang = math.degrees(math.atan2(-self.vel.y, self.vel.x))
-        surf_rot = pygame.transform.rotate(surf, ang)
-        pantalla.blit(surf_rot, (self.pos.x - surf_rot.get_width()/2 + offset[0] - self.vel.normalize().x*6,
-                                 self.pos.y - surf_rot.get_height()/2 + offset[1] - self.vel.normalize().y*6))
+    def dibujar(self, pantalla, offset=(0, 0)):
+        # Calcular puntos de inicio y fin de la línea
+        dir_norm = self.vel.normalize()
+        largo = 20
+        end_pos = self.pos + dir_norm * largo
+
+        # Capa 1: Brillo exterior
+        for i in range(4, 0, -1):
+            alpha = int(30 * i)
+            width = 2 + (i * 2)
+            pygame.draw.line(
+                pantalla,
+                (*COLOR_MISIL, alpha),
+                (int(self.pos.x + offset[0]), int(self.pos.y + offset[1])),
+                (int(end_pos.x + offset[0]), int(end_pos.y + offset[1])),
+                width
+            )
+
+        # Capa 2: Brillo medio
+        for i in range(3, 0, -1):
+            alpha = int(80 * i)
+            width = 1 + (i * 1)
+            pygame.draw.line(
+                pantalla,
+                (*COLOR_MISIL, alpha),
+                (int(self.pos.x + offset[0]), int(self.pos.y + offset[1])),
+                (int(end_pos.x + offset[0]), int(end_pos.y + offset[1])),
+                width
+            )
+
+        # Capa 3: Núcleo brillante
+        pygame.draw.line(
+            pantalla,
+            (255, 255, 255, 200),
+            (int(self.pos.x + offset[0]), int(self.pos.y + offset[1])),
+            (int(end_pos.x + offset[0]), int(end_pos.y + offset[1])),
+            4
+        )
+
+        # Capa 4: Centro ultra brillante
+        pygame.draw.line(
+            pantalla,
+            (255, 255, 255, 255),
+            (int(self.pos.x + offset[0]), int(self.pos.y + offset[1])),
+            (int(end_pos.x + offset[0]), int(end_pos.y + offset[1])),
+            2
+        )
+
 
 class Enemigo:
     def __init__(self, velocidad_nivel=VELOCIDAD_BASE_ENEMIGO):
