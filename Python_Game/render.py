@@ -1,101 +1,204 @@
+import math
+
 import pygame
 from pygame.math import Vector2
 
-from config import ANCHO, ALTO, COLOR_FONDO_BASE, ALCANCE_BEAM, COLOR_BEAM
+import config as cfg
+from entities import Enemigo, Nave, Proyectil
+from mundo import elipse_proyectada, proyectar_vector
+from partida import Partida
 
 
-def dibujar_ui(scene, entidades, stats, nave, reloj, perf_monitor=None, fuente=None):
-    if fuente is None:
-        fuente = pygame.font.SysFont("consolas", 18)
-    texto = f"Enemigos: {len(entidades['enemigos'])}  Misiles {'ON' if nave.misiles_activos else 'OFF'}  FPS:{int(reloj.get_fps())}"
-    surf = fuente.render(texto, True, (200,200,200))
-    scene.blit(surf, (10,10))
-
-    instr = "Controles: WASD mover | Clic izq: ráfaga | Clic der: láser continuo | Espacio: toggle misiles"
-    surf2 = fuente.render(instr, True, (160,160,160))
-    scene.blit(surf2, (10, ALTO-28))
-
-    stats_text = f"Muertes: {stats['muertes_totales']}  Vel: {int(stats['velocidad_enemigos'])}  Spawn: {stats['spawn_interval']:.1f}s"
-    surf_stats = fuente.render(stats_text, True, (180,180,180))
-    scene.blit(surf_stats, (10,35))
-
-    if not nave.alive:
-        fuente_grande = pygame.font.SysFont("consolas", 48, bold=True)
-        game_over = fuente_grande.render("GAME OVER", True, (255,80,80))
-        scene.blit(game_over, (ANCHO//2 - game_over.get_width()//2, ALTO//2 - 40))
-        fuente_med = pygame.font.SysFont("consolas", 24)
-        final_score = fuente_med.render(f"Enemigos eliminados: {stats['muertes_totales']}", True, (200,200,200))
-        scene.blit(final_score, (ANCHO//2 - final_score.get_width()//2, ALTO//2 + 20))
-
-    if perf_monitor:
-        perf_stats = perf_monitor.get_stats()
-        perf_text = f"CPU: {perf_stats['cpu']:.1f}%  RAM: {perf_stats['memory']:.0f}MB  Frame: {perf_stats['avg_frame_ms']:.1f}ms"
-        surf_perf = fuente.render(perf_text, True, (180,180,255))
-        scene.blit(surf_perf, (10,60))
-
-def dibujar_escena(scene, entidades, recursos, haz_activo, nave, mouse_pos, stats, reloj, fuente_ui):
-    scene.fill(COLOR_FONDO_BASE)
-    for n in entidades['nebulas']:
-        n.dibujar(scene)
-    for s in entidades['stars']:
-        s.dibujar(scene)
-    for f in entidades['fogs']:
-        f.dibujar(scene)
-    for e in entidades['enemigos']:
-        e.dibujar(scene, (0,0), recursos.get('enemigo'))
-    for m in entidades['misiles']:
-        m.dibujar(scene, (0,0))
-    for l in entidades['lasers']:
-        l.dibujar(scene, (0,0))
-    if nave.alive:
-        nave.dibujar(scene, (0,0), entidades['particles'], recursos.get('jugador'))
-    for p in entidades['particles']:
-        p.dibujar(scene, (0,0))
-
-    if haz_activo:
-        origen = nave.pos
-        dir_beam = Vector2(mouse_pos) - origen
-        dist = dir_beam.length()
-        if dist > 0:
-            dir_norm = dir_beam.normalize()
-
-            # Aplicar desfase de 6 unidades desde la nave
-            origen_desfasado = origen + dir_norm * 26
-            end_pos = origen_desfasado + dir_norm * min(ALCANCE_BEAM, dist - 26)
-
-            # Capa 1: Brillo exterior difuso
-            for i in range(5, 0, -1):
-                alpha = int(20 * i)
-                width = 6 + (i * 4)
-                pygame.draw.line(
-                    scene,
-                    (*COLOR_BEAM, alpha),
-                    (int(origen_desfasado.x), int(origen_desfasado.y)),
-                    (int(end_pos.x), int(end_pos.y)),
-                    width
-                )
-
-            # Capa 2: Brillo medio
-            for i in range(3, 0, -1):
-                alpha = int(60 * i)
-                width = 4 + (i * 2)
-                pygame.draw.line(
-                    scene,
-                    (*COLOR_BEAM, alpha),
-                    (int(origen_desfasado.x), int(origen_desfasado.y)),
-                    (int(end_pos.x), int(end_pos.y)),
-                    width
-                )
-
-            # Capa 3: Núcleo brillante blanco
-            pygame.draw.line(
-                scene,
-                (255, 255, 255, 200),
-                (int(origen_desfasado.x), int(origen_desfasado.y)),
-                (int(end_pos.x), int(end_pos.y)),
-                6
-            )
+def dibujar_escena(superficie: pygame.Surface, partida: Partida, fondo: dict, recursos: dict) -> None:
+    superficie.fill(cfg.COLOR_FONDO_BASE)
+    for grupo in ('nebulas', 'stars', 'fogs'):
+        for elemento in fondo[grupo]:
+            elemento.dibujar(superficie)
+    _dibujar_mapa(superficie, partida)
+    _dibujar_destino(superficie, partida)
+    entidades = [enemigo for enemigo in partida.mundo.activos if enemigo.vivo]
+    if partida.nave.viva:
+        entidades.append(partida.nave)
+    for entidad in sorted(entidades, key=lambda entidad: proyectar_vector(entidad.pos).y):
+        if isinstance(entidad, Nave):
+            _dibujar_nave(superficie, partida, recursos.get('jugador'))
+        else:
+            _dibujar_enemigo(superficie, partida, entidad, recursos.get('enemigo'))
+    for proyectil in partida.proyectiles:
+        _dibujar_proyectil(superficie, partida, proyectil)
+    if partida.haz_visible and partida.objetivo is not None:
+        _dibujar_haz(superficie, partida)
+    partida.efectos.dibujar(superficie, partida.camara, partida.nave.pos)
 
 
+def dibujar_marcadores(superficie: pygame.Surface, partida: Partida, fuente: pygame.font.Font) -> None:
+    for marcador in partida.marcadores:
+        posicion = partida.camara.a_pantalla(marcador.pos)
+        posicion.y += marcador.desplazamiento_pantalla
+        texto = fuente.render(marcador.texto, True, marcador.color)
+        texto.set_alpha(int(255 * min(1.0, marcador.tiempo / 0.3)))
+        superficie.blit(texto, texto.get_rect(center=posicion))
 
-    dibujar_ui(scene, entidades, stats, nave, reloj, fuente=fuente_ui)
+
+def _dibujar_mapa(superficie: pygame.Surface, partida: Partida) -> None:
+    camara = partida.camara
+    esquinas = (Vector2(0, 0), Vector2(cfg.ANCHO_MUNDO, 0),
+                Vector2(cfg.ANCHO_MUNDO, cfg.ALTO_MUNDO), Vector2(0, cfg.ALTO_MUNDO))
+    pygame.draw.polygon(superficie, (32, 60, 85), [camara.a_pantalla(punto) for punto in esquinas], 3)
+    for x in range(0, cfg.ANCHO_MUNDO + 1, cfg.TAMANIO_SECTOR):
+        a, b = camara.a_pantalla(Vector2(x, 0)), camara.a_pantalla(Vector2(x, cfg.ALTO_MUNDO))
+        pygame.draw.line(superficie, (15, 29, 44), a, b)
+    for y in range(0, cfg.ALTO_MUNDO + 1, cfg.TAMANIO_SECTOR):
+        a, b = camara.a_pantalla(Vector2(0, y)), camara.a_pantalla(Vector2(cfg.ANCHO_MUNDO, y))
+        pygame.draw.line(superficie, (15, 29, 44), a, b)
+    centro = camara.a_pantalla(Vector2(cfg.POSICION_BASE))
+    if superficie.get_rect().colliderect(elipse_proyectada(centro, cfg.RADIO_BASE)):
+        _dibujar_base(superficie, centro)
+
+
+def _dibujar_base(superficie: pygame.Surface, centro: Vector2) -> None:
+    radio = cfg.RADIO_BASE
+    tamanio = (radio * 2 + 4, round(radio * 2 * cfg.COMPRESION_ISOMETRICA) + 4)
+    capa = pygame.Surface(tamanio, pygame.SRCALPHA)
+    centro_local = Vector2(tamanio) / 2
+    pygame.draw.ellipse(capa, (30, 180, 160, 14), elipse_proyectada(centro_local, radio))
+    pygame.draw.ellipse(capa, (55, 200, 190, 110), elipse_proyectada(centro_local, radio), 2)
+    superficie.blit(capa, centro - centro_local)
+    _dibujar_plataforma(superficie, centro)
+    _dibujar_luces_base(superficie, centro)
+
+
+def _dibujar_plataforma(superficie: pygame.Surface, centro: Vector2) -> None:
+    pygame.draw.ellipse(superficie, (4, 11, 21), elipse_proyectada(centro + Vector2(6, 30), 112))
+    inferior = centro + Vector2(0, 20)
+    pygame.draw.ellipse(superficie, (10, 30, 45), elipse_proyectada(inferior, 90))
+    pygame.draw.rect(superficie, (10, 30, 45), (centro.x - 90, centro.y, 180, 20))
+    pygame.draw.ellipse(superficie, (35, 125, 150), elipse_proyectada(inferior, 90), 2)
+    pygame.draw.ellipse(superficie, (22, 50, 68), elipse_proyectada(centro, 90))
+    pygame.draw.ellipse(superficie, (95, 215, 225), elipse_proyectada(centro, 90), 2)
+    pygame.draw.ellipse(superficie, (45, 110, 140), elipse_proyectada(centro, 70), 2)
+    pygame.draw.ellipse(superficie, (115, 205, 215), elipse_proyectada(centro, 36), 1)
+    for desplazamiento in (-55, 55):
+        pygame.draw.line(superficie, (25, 80, 100), centro + Vector2(desplazamiento, -27),
+                         centro + Vector2(desplazamiento, 27), 2)
+
+
+def _dibujar_luces_base(superficie: pygame.Surface, centro: Vector2) -> None:
+    for angulo in range(0, 360, 90):
+        direccion = proyectar_vector(Vector2(1, 0).rotate(angulo))
+        inicio, fin = centro + direccion * 70, centro + direccion * 110
+        pygame.draw.line(superficie, (6, 20, 32), inicio + Vector2(0, 7), fin + Vector2(0, 7), 9)
+        pygame.draw.line(superficie, (45, 110, 130), inicio, fin, 7)
+        pygame.draw.line(superficie, (145, 235, 230), inicio, fin, 2)
+        pygame.draw.ellipse(superficie, (110, 220, 225), elipse_proyectada(fin, 8))
+    for x in (-70, -35, 0, 35, 70):
+        pygame.draw.circle(superficie, (90, 200, 230), centro + Vector2(x, 35), 2)
+
+
+def _dibujar_destino(superficie: pygame.Surface, partida: Partida) -> None:
+    if partida.nave.pos.distance_to(partida.nave.destino) < 3:
+        return
+    posicion = partida.camara.a_pantalla(partida.nave.destino)
+    pygame.draw.ellipse(superficie, (75, 140, 175), elipse_proyectada(posicion, 12), 1)
+    for vector in (Vector2(1, 0), Vector2(0, 1)):
+        direccion = proyectar_vector(vector) * 18
+        pygame.draw.line(superficie, (75, 140, 175), posicion - direccion, posicion + direccion, 1)
+
+
+def _dibujar_enemigo(superficie: pygame.Surface, partida: Partida, enemigo: Enemigo, imagen: pygame.Surface | None) -> None:
+    posicion = partida.camara.a_pantalla(enemigo.pos)
+    if not superficie.get_rect().inflate(120, 120).collidepoint(posicion):
+        return
+    direccion = partida.nave.pos - enemigo.pos
+    angulo = math.degrees(math.atan2(-direccion.y, direccion.x))
+    _dibujar_sombra(superficie, posicion)
+    if imagen is not None:
+        _dibujar_sprite(superficie, imagen, posicion, angulo + 180)
+    else:
+        _dibujar_casco(superficie, posicion, angulo, cfg.COLOR_ENEMIGO)
+    if enemigo is partida.objetivo:
+        pygame.draw.ellipse(superficie, (255, 185, 80), elipse_proyectada(posicion, 30), 2)
+    barra = pygame.Rect(posicion.x - 23, posicion.y - 27, 46, 4)
+    pygame.draw.rect(superficie, (38, 47, 58), barra)
+    pygame.draw.rect(superficie, (130, 225, 160), (*barra.topleft, barra.width * enemigo.vida / cfg.VIDA_ENEMIGO, 4))
+
+
+def _dibujar_nave(superficie: pygame.Surface, partida: Partida, imagen: pygame.Surface | None) -> None:
+    nave = partida.nave
+    centro = partida.camara.a_pantalla(nave.pos)
+    direccion = proyectar_vector(Vector2(math.cos(math.radians(nave.angulo)), -math.sin(math.radians(nave.angulo))))
+    _dibujar_sombra(superficie, centro)
+    if nave.vel.length_squared() > 1:
+        escape = centro - direccion * 24
+        pygame.draw.circle(superficie, (40, 110, 185), escape, 6)
+        pygame.draw.circle(superficie, (170, 235, 255), escape, 3)
+    if nave.escudo > 0:
+        _dibujar_escudo(superficie, nave, centro)
+    if imagen is not None:
+        _dibujar_sprite(superficie, imagen, centro, nave.angulo)
+    else:
+        _dibujar_casco(superficie, centro, nave.angulo, cfg.COLOR_NAVE)
+
+
+def proyectar_sprite(imagen: pygame.Surface, angulo: float) -> pygame.Surface:
+    rotada = pygame.transform.rotate(imagen, angulo - 45)
+    ancho = max(1, round(rotada.get_width() * cfg.ESCALA_SPRITE_ISOMETRICO))
+    alto = max(1, round(rotada.get_height() * cfg.ESCALA_SPRITE_ISOMETRICO * cfg.COMPRESION_ISOMETRICA))
+    return pygame.transform.smoothscale(rotada, (ancho, alto))
+
+
+def _dibujar_sprite(superficie: pygame.Surface, imagen: pygame.Surface, centro: Vector2, angulo: float) -> None:
+    rotada = proyectar_sprite(imagen, angulo)
+    lateral = rotada.copy()
+    lateral.fill((65, 95, 120, 210), special_flags=pygame.BLEND_RGBA_MULT)
+    superficie.blit(lateral, lateral.get_rect(center=centro + Vector2(0, 3)))
+    superficie.blit(rotada, rotada.get_rect(center=centro))
+
+
+def _dibujar_casco(superficie: pygame.Surface, centro: Vector2, angulo: float, color: tuple) -> None:
+    direccion = Vector2(math.cos(math.radians(angulo)), -math.sin(math.radians(angulo)))
+    lateral = direccion.rotate(90)
+    vectores = (direccion * 21, -direccion * 15 + lateral * 14,
+                -direccion * 10, -direccion * 15 - lateral * 14)
+    puntos = [centro + proyectar_vector(vector) for vector in vectores]
+    pygame.draw.polygon(superficie, (20, 45, 65), [punto + Vector2(0, 4) for punto in puntos])
+    pygame.draw.polygon(superficie, color, puntos)
+    pygame.draw.lines(superficie, (195, 235, 245), False, puntos[:3], 1)
+
+
+def _dibujar_sombra(superficie: pygame.Surface, centro: Vector2) -> None:
+    capa = pygame.Surface((64, 30), pygame.SRCALPHA)
+    pygame.draw.ellipse(capa, (0, 3, 10, 95), (6, 9, 50, 15))
+    pygame.draw.ellipse(capa, (0, 3, 10, 65), (13, 12, 36, 9))
+    superficie.blit(capa, centro - Vector2(28, 3))
+
+
+def _dibujar_escudo(superficie: pygame.Surface, nave: Nave, centro: Vector2) -> None:
+    capa = pygame.Surface((80, 44), pygame.SRCALPHA)
+    centro_local = Vector2(40, 22)
+    alpha = round(35 + 40 * nave.escudo / nave.escudo_maximo)
+    pygame.draw.ellipse(capa, (70, 175, 255, 15), elipse_proyectada(centro_local, 32))
+    pygame.draw.ellipse(capa, (95, 205, 255, alpha), elipse_proyectada(centro_local, 32), 2)
+    pygame.draw.arc(capa, (160, 230, 255, alpha), elipse_proyectada(centro_local, 30), 0.4, 2.7, 1)
+    superficie.blit(capa, centro - centro_local)
+
+
+def _dibujar_proyectil(superficie: pygame.Surface, partida: Partida, proyectil: Proyectil) -> None:
+    posicion = partida.camara.a_pantalla(proyectil.pos)
+    if not superficie.get_rect().inflate(50, 50).collidepoint(posicion):
+        return
+    color = {'laser': cfg.COLOR_LASER, 'misil': cfg.COLOR_MISIL, 'enemigo': (255, 105, 105)}[proyectil.tipo]
+    direccion = proyectar_vector(proyectil.vel.normalize()) if proyectil.vel.length_squared() else Vector2(1, 0)
+    pygame.draw.line(superficie, color, posicion - direccion * 18, posicion, 4)
+    pygame.draw.line(superficie, (255, 250, 235), posicion - direccion * 12, posicion, 1)
+
+
+def _dibujar_haz(superficie: pygame.Surface, partida: Partida) -> None:
+    objetivo = partida.objetivo
+    direccion = objetivo.pos - partida.nave.pos
+    direccion = direccion.normalize() if direccion.length_squared() else Vector2(1, 0)
+    inicio = partida.camara.a_pantalla(partida.nave.pos + direccion * 22)
+    fin = partida.camara.a_pantalla(objetivo.pos - direccion * objetivo.radio)
+    pygame.draw.line(superficie, (25, 90, 155), inicio, fin, 8)
+    pygame.draw.line(superficie, cfg.COLOR_BEAM, inicio, fin, 4)
+    pygame.draw.line(superficie, (235, 250, 255), inicio, fin, 1)

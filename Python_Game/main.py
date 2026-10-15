@@ -1,138 +1,214 @@
-import os
 import logging
-import random
+import os
+
 import pygame
-from pygame.math import Vector2
 
-from config import ANCHO, ALTO, FPS, BLOOM_INTENSITY, BLOOM_DOWNSCALE, SCREEN_SHAKE_INTENSITY
-from utils import apply_bloom
-from resources import cargar_recursos, inicializar_entidades
+import config as cfg
+from guardado import AlmacenPartida, ErrorGuardado
+from interfaz import Interfaz
+from logic import manejar_evento_juego
+from mundo import proyectar_vector
+from partida import Partida
 from performance import PerformanceMonitor
-from logic import (
-    manejar_eventos,
-    procesar_inputs,
-    actualizar_proyectiles,
-    procesar_colisiones_laser,
-    procesar_colisiones_misil,
-    procesar_haz,
-    procesar_colisiones_nave,
-    actualizar_entidades,
-)
 from render import dibujar_escena
+from resources import cargar_recursos, crear_fondo
+from tienda import comprar
+from utils import apply_bloom
 
-LOG_FORMAT = "%(asctime)s %(levelname)s: %(message)s"
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-logger = logging.getLogger("Naves")
-
-
-def verificar_aceleracion_gpu():
-    try:
-        pygame.init()
-        driver = pygame.display.get_driver()
-        logger.info(f"Driver de video activo: {driver}")
-        info = pygame.display.Info()
-        logger.info(f"Aceleración por hardware: {info.hw}")
-        logger.info(f"Blits acelerados: {info.blit_hw}")
-        logger.info(f"Version SDL: {pygame.get_sdl_version()}")
-        logger.info(f"Version Pygame: {pygame.version.ver}")
-        return info.hw
-    except Exception:
-        logger.exception("Fallo al verificar aceleración GPU")
-        return False
+logger = logging.getLogger('Naves')
 
 
-def ejecutar():
-    os.environ['SDL_VIDEO_CENTERED'] = '1'
-    logger.info("Iniciando juego")
-    verificar_aceleracion_gpu()
+class Aplicacion:
+    def __init__(self, almacen: AlmacenPartida | None = None) -> None:
+        os.environ.setdefault('SDL_VIDEO_CENTERED', '1')
+        pygame.display.init()
+        pygame.font.init()
+        self._iniciar_audio()
+        self.pantalla = pygame.display.set_mode((cfg.ANCHO, cfg.ALTO), pygame.DOUBLEBUF)
+        pygame.display.set_caption('Yugen-Noumeno')
+        self.escena = pygame.Surface((cfg.ANCHO, cfg.ALTO))
+        self.reloj = pygame.time.Clock()
+        self.monitor = PerformanceMonitor()
+        self.recursos = cargar_recursos()
+        self.fondo = crear_fondo(self.recursos)
+        self.interfaz = Interfaz()
+        self.almacen = almacen if almacen is not None else AlmacenPartida()
+        self.partida: Partida | None = None
+        self.estado = 'inicio'
+        self.estado_anterior = 'inicio'
+        self.mensaje = ''
+        self.en_ejecucion = True
 
-    try:
-        pygame.mixer.init(frequency=44100, size=-16, channels=2)
-    except Exception:
-        logger.exception("No se pudo inicializar pygame.mixer; audio puede fallar")
+    def _iniciar_audio(self) -> None:
+        try:
+            pygame.mixer.init(frequency=44100, size=-16, channels=2)
+        except pygame.error as error:
+            logger.warning('Audio no disponible: %s', error)
 
-    pantalla = pygame.display.set_mode((ANCHO, ALTO), pygame.DOUBLEBUF)
-    pygame.display.set_caption("Naves Espaciales - Bloom & Shake (modular)")
-    reloj = pygame.time.Clock()
+    def ejecutar(self) -> None:
+        try:
+            while self.en_ejecucion:
+                dt = min(self.reloj.tick(cfg.FPS) / 1000.0, cfg.PASO_MAXIMO_SEGUNDOS)
+                for evento in pygame.event.get():
+                    self.procesar_evento(evento)
+                    if not self.en_ejecucion:
+                        break
+                if self.en_ejecucion:
+                    self.actualizar(dt)
+                    self.dibujar()
+        finally:
+            pygame.quit()
 
-    scene = pygame.Surface((ANCHO, ALTO))
-    perf_monitor = PerformanceMonitor()
-    recursos = cargar_recursos()
+    def procesar_evento(self, evento: pygame.event.Event) -> None:
+        if evento.type == pygame.QUIT:
+            self._salir()
+            return
+        if self.estado == 'jugando':
+            accion = manejar_evento_juego(evento, self.partida)
+            if accion:
+                self.accion(accion)
+            return
+        if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+            self._volver()
+        elif evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+            self._pulsar_boton(evento.pos)
 
-    for k, v in list(recursos.items()):
-        if isinstance(v, pygame.Surface):
-            try:
-                recursos[k] = v.convert_alpha()
-            except Exception:
-                logger.exception(f"Error convert_alpha en recurso {k}")
+    def _pulsar_boton(self, posicion: tuple[int, int]) -> None:
+        botones = self.interfaz.botones(self.estado, self.partida, self.almacen.ruta.exists())
+        for boton in botones:
+            if boton.habilitado and boton.rectangulo.collidepoint(posicion):
+                self.accion(boton.accion)
+                return
 
-    entidades = inicializar_entidades(recursos)
-    nave = entidades['nave']
+    def accion(self, accion: str) -> None:
+        self.mensaje = ''
+        if accion.startswith('comprar_'):
+            self.mensaje = comprar(self.partida, accion.removeprefix('comprar_'))
+            return
+        acciones = {
+            'nueva': self._pedir_nueva, 'confirmar': self._nueva,
+            'cancelar': self._volver, 'cargar': self._cargar,
+            'guardar': self._guardar, 'salir': self._salir,
+            'reanudar': self._reanudar, 'pausa': self._pausar,
+            'tienda': self._abrir_tienda, 'cancelar_salida': self._volver,
+            'salir_sin_guardar': self._salir_sin_guardar,
+        }
+        acciones[accion]()
 
-    stats = {
-        'muertes_totales': 0,
-        'velocidad_enemigos': 250.0,
-        'spawn_interval': 2.5,
-        'tiempo_spawn': 0.0,
-    }
-
-    shake_state = {'timer': 0.0, 'amount': 0.0}
-
-    def trigger_shake(amount, duration=0.25):
-        shake_state['timer'] = max(shake_state['timer'], duration)
-        shake_state['amount'] = max(shake_state['amount'], amount)
-
-    fuente_ui = pygame.font.SysFont("consolas", 18)
-
-    running = True
-    while running:
-        dt = reloj.tick(FPS) / 1000.0
-        mouse_pos = pygame.mouse.get_pos()
-        perf_monitor.update()
-
-        running = manejar_eventos(nave)
-        if not running:
-            break
-
-        haz_activo = procesar_inputs(nave, dt, mouse_pos, entidades, recursos, stats)
-        actualizar_proyectiles(entidades, dt)
-        procesar_colisiones_laser(entidades, recursos, stats, trigger_shake)
-        procesar_colisiones_misil(entidades, recursos, stats, trigger_shake)
-        procesar_haz(haz_activo, entidades, recursos, stats, dt, trigger_shake, nave, mouse_pos)
-        procesar_colisiones_nave(entidades, recursos, stats, trigger_shake)
-
-        parallax_velocity = nave.vel if nave.alive else Vector2(0, 0)
-        actualizar_entidades(entidades, dt, parallax_velocity, stats)
-
-        if shake_state['timer'] > 0:
-            shake_state['timer'] -= dt
-            factor = shake_state['timer'] / 0.25 if shake_state['timer'] < 0.25 else 1
-            offset = (
-                random.uniform(-shake_state['amount'], shake_state['amount']) * factor,
-                random.uniform(-shake_state['amount'], shake_state['amount']) * factor,
-            )
+    def _pedir_nueva(self) -> None:
+        if self.almacen.ruta.exists() or self.partida is not None:
+            self.estado_anterior = self.estado
+            self.estado = 'confirmar_nueva'
         else:
-            offset = (0, 0)
-            shake_state['amount'] = 0.0
-            shake_state['timer'] = 0.0
+            self._nueva()
 
-        dibujar_escena(scene, entidades, recursos, haz_activo, nave, mouse_pos, stats, reloj, fuente_ui)
+    def _nueva(self) -> None:
+        self.partida = Partida()
+        self.partida.mundo.actualizar(self.partida.nave.pos, 0.0)
+        self.estado = 'jugando'
 
-        bloom = apply_bloom(scene, intensity=BLOOM_INTENSITY, downscale=BLOOM_DOWNSCALE)
-        pantalla.fill((0, 0, 0))
-        pantalla.blit(scene, offset)
-        pantalla.blit(bloom, offset, special_flags=pygame.BLEND_ADD)
+    def _cargar(self) -> None:
+        try:
+            partida = self.almacen.cargar()
+        except ErrorGuardado as error:
+            logger.warning('Carga rechazada: %s', error)
+            self.mensaje = str(error)
+            return
+        self.partida = partida
+        self.estado = 'jugando' if partida.nave.viva else 'derrota'
+
+    def _guardar(self) -> bool:
+        if self.partida is None:
+            return True
+        try:
+            self.almacen.guardar(self.partida)
+        except ErrorGuardado as error:
+            logger.warning('Guardado rechazado: %s', error)
+            self.mensaje = str(error)
+            return False
+        self.mensaje = 'Partida guardada.'
+        return True
+
+    def _salir(self) -> None:
+        if self._guardar():
+            self.en_ejecucion = False
+        else:
+            if self.estado != 'error_salida':
+                self.estado_anterior = self.estado
+            self.estado = 'error_salida'
+            if self.partida is not None:
+                self.partida.nave.detener_disparo()
+
+    def _salir_sin_guardar(self) -> None:
+        self.en_ejecucion = False
+
+    def _pausar(self) -> None:
+        self.partida.nave.detener_disparo()
+        if pygame.mixer.get_init():
+            pygame.mixer.stop()
+        self.estado = 'pausa'
+
+    def _abrir_tienda(self) -> None:
+        self.partida.preparar_base()
+        self.partida.nave.destino = self.partida.nave.pos.copy()
+        self.estado = 'tienda'
+
+    def _reanudar(self) -> None:
+        self.estado = 'jugando' if self.partida.nave.viva else 'derrota'
+
+    def _volver(self) -> None:
+        if self.estado in ('pausa', 'tienda'):
+            self._reanudar()
+        elif self.estado in ('confirmar_nueva', 'error_salida'):
+            self.estado = self.estado_anterior
+        self.mensaje = ''
+
+    def actualizar(self, dt: float) -> None:
+        self.monitor.update()
+        if self.estado == 'derrota':
+            self.partida.actualizar_visuales(dt)
+            return
+        if self.estado != 'jugando':
+            return
+        self.partida.actualizar(dt)
+        for grupo in self.fondo.values():
+            for elemento in grupo:
+                elemento.actualizar(dt, proyectar_vector(self.partida.nave.vel))
+        self._reproducir_audio()
+        if not self.partida.nave.viva:
+            self.estado = 'derrota'
+
+    def _reproducir_audio(self) -> None:
+        for nombre in set(self.partida.eventos_audio):
+            sonido = self.recursos.get(nombre)
+            if sonido is not None:
+                try:
+                    sonido.play()
+                except pygame.error as error:
+                    logger.warning('No se pudo reproducir %s: %s', nombre, error)
+        self.partida.eventos_audio.clear()
+
+    def dibujar(self) -> None:
+        if self.partida is None:
+            self.escena.fill(cfg.COLOR_FONDO_BASE)
+            for estrella in self.fondo['stars']:
+                estrella.dibujar(self.escena)
+        else:
+            dibujar_escena(self.escena, self.partida, self.fondo, self.recursos)
+        self.pantalla.blit(self.escena, (0, 0))
+        self.pantalla.blit(apply_bloom(self.escena), (0, 0), special_flags=pygame.BLEND_ADD)
+        if self.partida is not None:
+            self.interfaz.dibujar_hud(self.pantalla, self.partida, self.reloj.get_fps())
+        if self.estado != 'jugando':
+            self.interfaz.dibujar_menu(self.pantalla, self.estado, self.partida,
+                                       self.almacen.ruta.exists(), self.mensaje)
         pygame.display.flip()
 
-    try:
-        pygame.mixer.quit()
-    except Exception:
-        logger.debug("Error al cerrar mixer (puede que no estuviera inicializado)")
 
-    pygame.quit()
-    logger.info("Juego finalizado")
+def ejecutar() -> None:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
+    Aplicacion().ejecutar()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     ejecutar()
-
